@@ -161,7 +161,7 @@ def main():
         settings = Settings(mqtt=mqtt_settings, entity=power_factor_sensor_info)
         power_factor_sensor = Sensor(settings)
 
-        total_consumption_sensor_info = SensorInfo(name='Total Consumption', device_class='energy', unique_id=f'TC{d_id}', unit_of_measurement='kWh', device=device_info)
+        total_consumption_sensor_info = SensorInfo(name='Total Consumption', device_class='energy', unique_id=f'TC{d_id}', state_class='total_increasing', unit_of_measurement='kWh', device=device_info)
         settings = Settings(mqtt=mqtt_settings, entity=total_consumption_sensor_info)
         total_consumption_sensor = Sensor(settings)
 
