@@ -1,5 +1,7 @@
+import sys
 import time
 import signal
+import logging
 import threading
 import simplepyble
 from functools import partial
@@ -15,28 +17,31 @@ ONLINE_DATA = 61441
 data = {}
 
 data_template = {
-    'voltage': 0,
-    'current': 0,
-    'power': 0,
-    'frequency': 0,
-    'power_factor': 0,
-    'total_consumption': 0,
-    'ontime': 0,
+    'voltage': -1,
+    'current': -1,
+    'power': -1,
+    'frequency': -1,
+    'power_factor': -1,
+    'total_consumption': -1,
+    'ontime': -1,
 }
 
 mqtt_settings = Settings.MQTT(host='localhost', port=1883, username='user', password='pw')
 mqtt_devices = {}
 
-def update_devices():
-    while True:
-        for d_id, device in mqtt_devices.items():
-            device['voltage'].set_state(data[d_id]['voltage'])
-            device['current'].set_state(data[d_id]['current'])
-            device['power'].set_state(data[d_id]['power'])
-            device['frequency'].set_state(data[d_id]['frequency'])
-            device['power_factor'].set_state(data[d_id]['power_factor'])
-            device['total_consumption'].set_state(data[d_id]['total_consumption'])
-        time.sleep(1)
+logger = logging.getLogger(__name__)
+logging.basicConfig(filename='btsocket.log', level=logging.INFO)
+handler = logging.StreamHandler(sys.stdout)
+logger.addHandler(handler)
+
+def update_devices(device_identifier):
+    device = mqtt_devices[device_identifier]
+    device['voltage'].set_state(data[device_identifier]['voltage'])
+    device['current'].set_state(data[device_identifier]['current'])
+    device['power'].set_state(data[device_identifier]['power'])
+    device['frequency'].set_state(data[device_identifier]['frequency'])
+    device['power_factor'].set_state(data[device_identifier]['power_factor'])
+    device['total_consumption'].set_state(data[device_identifier]['total_consumption'])
 
 class GracefulKiller:
     kill_now = False
@@ -48,6 +53,7 @@ class GracefulKiller:
     def exit_gracefully(self, signum, frame):
         self.kill_now = True
 
+killer = GracefulKiller()
 
 def build_data(t):
     if t in [ONLINE_DATA, 61442, 61445, 61446, 61447, 61448]:
@@ -100,19 +106,22 @@ def decrypt_data(device_identifier, data_package):
         data[device_identifier]['power_factor'] = power_factor
         data[device_identifier]['total_consumption'] = total_consumption
         data[device_identifier]['ontime'] = ontime
+        # update device
+        update_devices(device_identifier)
 
-
-def main():
+def setup_devices():
+    global killer
     # pick the first bluetooth adapter
     adapters = simplepyble.Adapter.get_adapters()
     if len(adapters) == 0:
-        print('No bluetooth adapters found')
+        logger.error('No bluetooth adapters found')
         return
     adapter = adapters[0]
+    logger.info(f'Selected adapter: {adapter.identifier()} [{adapter.address()}]')
 
     # scan devices
     avail_devices = []
-    while len(avail_devices) == 0:
+    while len(avail_devices) == 0 and not killer.kill_now:
         adapter.scan_for(5000)
         peripherals = adapter.scan_get_results()
         for peripheral in peripherals:
@@ -122,20 +131,30 @@ def main():
                     service_uuid = service.uuid()
                     if service_uuid.upper() == OUTLET_SERVICE_UUID.upper():
                         avail_devices.append(peripheral)
+                        logger.info(f'Found {peripheral.identifier()} [{peripheral.address()}]')
                         break
+        if len(avail_devices) == 0:
+            logger.warning('No devices found, repeating scan')
 
     # setup job
     for avail_device in avail_devices:
         # connect to devices found
-        while not avail_device.is_connected():
+        while not avail_device.is_connected() and not killer.kill_now:
+            logger.info(f'Connecting to: {avail_device.identifier()} [{avail_device.address()}]')
             avail_device.connect()
             time.sleep(1)
-
-        # create data structure
-        data[avail_device.identifier()] = data_template.copy()
+        logger.info(f'Successfully connected to: {avail_device.identifier()} [{avail_device.address()}]')
 
         # register notification
         avail_device.notify(OUTLET_SERVICE_UUID, NOTIFY_CHARACTERISTIC_UUID, partial(decrypt_data, avail_device.identifier()))
+        logger.info(f'Registered notification for {avail_device.identifier()}')
+
+        # create data structure
+        logger.info(f'Creating data structure for {avail_device.identifier()}')
+        if avail_device.identifier() in data:
+            logger.info(f'Data structure already exists for {avail_device.identifier()}')
+            continue
+        data[avail_device.identifier()] = data_template.copy()
 
         # create mqtt devices
         d_id = avail_device.identifier()
@@ -173,20 +192,27 @@ def main():
             'power_factor': power_factor_sensor,
             'total_consumption': total_consumption_sensor
         }
+    return avail_devices
 
-    # start updating devices
-    threading.Thread(target=update_devices, daemon=True).start()
-
-    killer = GracefulKiller()
-    while not killer.kill_now:
+def app():
+    avail_devices = setup_devices()
+    # reconnect timer
+    start_time = time.time()
+    while not killer.kill_now and (time.time() - start_time) < 1800:
         # build and write
         for avail_device in avail_devices:
             push_data(avail_device, ONLINE_DATA)
         time.sleep(1)
 
+    logger.info('Exiting...')
     for avail_device in avail_devices:
         avail_device.disconnect()
 
+def main():
+    while not killer.kill_now:
+        app_thread = threading.Thread(target=app, daemon=True)
+        app_thread.start()
+        app_thread.join()
 
 if __name__ == "__main__":
     main()
