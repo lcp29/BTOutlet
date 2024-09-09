@@ -4,6 +4,10 @@
 
 <img src="assets/socket.jpg" alt="socket" width="300pt" />
 
+只能用小程序访问
+
+<img src="assets/mapp.png" alt="socket" width="100pt" />
+
 目前支持读取电压、电流、功率、功率因数、频率和总耗电量，支持多设备分开管理，提供HTTP API和MQTT接入
 
 #### HTTP API
